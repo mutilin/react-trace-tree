@@ -1,0 +1,13 @@
+{
+  "name": "@mutilin/react-trace-tree",
+  "version": "0.1.0",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/index.d.ts",
+  "style": "dist/style.css",
+  "files": ["dist", "LICENSE"],
+  "scripts": {"build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && cp src/style.css dist/style.css"},
+  "dependencies": {"@mutilin/trace-tree-core": "0.1.0"},
+  "peerDependencies": {"react": ">=16.13.1", "react-dom": ">=16.13.1"}
+}

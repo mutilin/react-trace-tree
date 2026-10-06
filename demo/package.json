@@ -1,0 +1,7 @@
+{
+  "name": "trace-tree-demo",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {"dev": "vite --host 127.0.0.1", "build": "vite build"},
+  "dependencies": {"@mutilin/react-trace-tree": "0.1.0", "react": "16.13.1", "react-dom": "16.13.1"}
+}
