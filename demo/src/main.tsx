@@ -2,40 +2,44 @@ import * as React from 'react';
 import * as ReactDOM from 'react-dom';
 import { TraceTree } from '@mutilin/react-trace-tree';
 import { TraceFlow } from '@mutilin/trace-tree-core';
+import type { OhciStep } from '../../tests/fixtures/ohci-small';
+import ohciSarif from '../../tests/fixtures/ohci-small.sarif?raw';
 import '@mutilin/react-trace-tree/dist/style.css';
 
-const flows: TraceFlow[] = [
-    {id: 'global', locations: [
-        {kinds: ['group', 'declarations'], nestingLevel: 0, importance: 'unimportant', location: {message: {text: 'Global declarations'}}},
-        {nestingLevel: 1, importance: 'unimportant', location: {message: {text: 'Initialize a global variable'}}},
-    ]},
-    {id: '1', locations: [
-        {kinds: ['group', 'enter', 'function'], nestingLevel: 0, importance: 'unimportant', location: {message: {text: 'Start worker'}}},
-        {kinds: ['note'], nestingLevel: 1, importance: 'important', properties: {noteLevel: 1, sourceStepIndex: 0},
-            location: {message: {text: 'Worker entry note'}}},
-        {kinds: ['group', 'action'], nestingLevel: 1, importance: 'important', location: {message: {text: 'Prepare resource'}}},
-        {kinds: ['note'], nestingLevel: 2, importance: 'important', properties: {noteLevel: 1, sourceStepIndex: 4},
-            location: {message: {text: 'Resource is relevant'}}},
-        {nestingLevel: 2, importance: 'unimportant', location: {message: {text: 'Acquire resource'}}},
-        {nestingLevel: 1, importance: 'unimportant', location: {message: {text: 'Return'}}},
-    ]},
-    {id: '2', locations: [
-        {kinds: ['group', 'enter', 'function'], nestingLevel: 0, importance: 'unimportant', location: {message: {text: 'Run callback'}}},
-        {nestingLevel: 1, importance: 'unimportant', location: {message: {text: 'Check state'}}},
-    ]},
-];
+const run = JSON.parse(ohciSarif).runs[0];
+const flows: TraceFlow<OhciStep>[] = run.results[0].codeFlows[0].threadFlows;
+const artifacts: Array<{location: {uri: string}; contents: {text: string}}> = run.artifacts;
+
+function details(step: OhciStep) {
+    const physical = step.location.physicalLocation;
+    return {message: step.location.message?.text ?? physical?.region.snippet?.text,
+        file: physical?.artifactLocation.uri, line: physical?.region.startLine};
+}
 
 function App() {
-    const [selection, setSelection] = React.useState('Select a trace step');
-    return <main style={{maxWidth: 900, margin: '2rem auto', fontFamily: 'sans-serif'}}>
-        <h1>React Trace Tree</h1>
-        <p>Expand a scope, or select a step. Global declarations have no thread marker.</p>
+    const [selection, setSelection] = React.useState<{step: OhciStep; flowIndex: number; stepIndex: number}>();
+    const physical = selection?.step.location.physicalLocation;
+    const artifact = physical && artifacts[physical.artifactLocation.index];
+    return <main style={{maxWidth: 1100, margin: '2rem auto', fontFamily: 'sans-serif'}}>
+        <h1>React Trace Tree — small OHCI trace</h1>
+        <p>{run.results[0].message.text}. Three embedded C files, two threads and global declarations.</p>
+        <p>Use arrows to expand groups; select a header or step to view its source. Global declarations have no thread marker.</p>
         <div style={{height: 380, border: '1px solid #ccc'}}>
-            <TraceTree flows={flows}
-                onSelectStep={(step, flowIndex, stepIndex) => setSelection(
-                    `Thread ${flows[flowIndex].id}, step ${stepIndex + 1}: ${step.location?.message?.text}`)} />
+            <TraceTree flows={flows} logicalLocations={run.logicalLocations} getStepDetails={details}
+                onSelectStep={(step, flowIndex, stepIndex) => setSelection({step, flowIndex, stepIndex})} />
         </div>
-        <p role="status">{selection}</p>
+        <p role="status">{selection
+            ? `Thread ${flows[selection.flowIndex].id}, step ${selection.stepIndex + 1}: ${details(selection.step).message ?? '—'}`
+            : 'Select a trace header or step.'}</p>
+        {artifact && physical ? <section aria-label="Embedded source">
+            <h2 style={{fontSize: 16}}>{artifact.location.uri}:{physical.region.startLine}</h2>
+            <pre style={{overflow: 'auto', padding: 12, background: '#f5f5f5', fontSize: 12}}>
+                {artifact.contents.text.trimEnd().split('\n').map((line, index) => <span key={index}
+                    style={{display: 'block', background: index + 1 === physical.region.startLine ? '#fff1a8' : undefined}}>
+                    <span style={{display: 'inline-block', width: 28, color: '#777', userSelect: 'none'}}>{index + 1}</span>{line || ' '}
+                </span>)}
+            </pre>
+        </section> : selection && <p>This header has no physical source location.</p>}
     </main>;
 }
 
