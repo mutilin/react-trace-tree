@@ -16,6 +16,11 @@ the Node-only `loadOhci()` helper). Run `npm run build` followed by `npm run dem
 to explore it; selecting a header or step shows its embedded C source with the
 corresponding line highlighted.
 
+`demo/src/sarif.ts` supplies generic structural SARIF types and source-detail
+helpers. The demo does not depend on fixture-specific TypeScript types or the
+Node-only test loader; OHCI supplies only the example data. Artifact references
+can use indexes or URIs, and locations without embedded source are handled.
+
 To regenerate, run from a Klever checkout with its Python dependencies installed:
 
 ```sh

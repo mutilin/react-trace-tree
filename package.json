@@ -7,7 +7,7 @@
   ],
   "scripts": {
     "build": "npm run build -w @mutilin/trace-tree-core && npm run build -w @mutilin/react-trace-tree",
-    "test": "mocha -r ts-node/register packages/core/src/**/*.spec.ts packages/react/src/**/*.spec.tsx",
+    "test": "mocha -r ts-node/register packages/core/src/**/*.spec.ts packages/react/src/**/*.spec.tsx demo/src/**/*.spec.ts",
     "demo": "npm run dev -w trace-tree-demo",
     "demo:build": "npm run build -w trace-tree-demo"
   },
