@@ -13,6 +13,8 @@
 .rtt-file { color: var(--vscode-descriptionForeground, #777); overflow: hidden; text-overflow: ellipsis; max-width: 25%; }
 .rtt-line { flex: none; padding: 0 4px; border-radius: 3px; background: var(--vscode-badge-background, #ddd); color: var(--vscode-badge-foreground, #222); }
 .rtt-scope button, .rtt-collapsed button { cursor: pointer; border: 0; background: transparent; color: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rtt-scope .rtt-disclosure { flex: none; width: 20px; padding: 0; }
+.rtt-scope .rtt-header-label { text-align: left; padding: 0; }
 .rtt-relevant { margin-left: 6px; color: var(--vscode-problemsWarningIcon-foreground, #a66); font-size: 11px; }
 .rtt-collapsed { padding-left: 22px; color: var(--vscode-textLink-foreground, #0563c1); }
 .rtt-step { cursor: pointer; }

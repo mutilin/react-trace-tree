@@ -12,7 +12,7 @@ export interface TraceStep {
 export interface TraceFlow<T extends TraceStep = TraceStep> {
     id?: string;
     locations: T[];
-    properties?: { scopes?: unknown };
+    properties?: { [name: string]: unknown };
 }
 export interface TraceLogicalLocation {
     name?: string;
@@ -106,17 +106,17 @@ export interface TraceScope {
     parentId: string | null;
     startIndex: number;
     endIndex: number;
-    logicalLocationIndex?: number;
     relevant?: boolean;
 }
 
 export interface ScopeRow<T extends TraceStep = TraceStep> {
     type: 'scope';
+    index: number;
     scope: TraceScope;
     label: string;
     open: boolean;
     depth: number;
-    location?: T;
+    location: T;
 }
 
 export interface StepRow<T extends TraceStep = TraceStep> {
@@ -140,7 +140,7 @@ export function buildThreadTraceRows<T extends TraceStep>(flows: TraceFlow<T>[],
     expandedScopes: ReadonlyMap<string, boolean>, expandedGroups: ReadonlySet<string>, showAll: boolean): ThreadTraceRow<T>[] {
     return flows.reduce<ThreadTraceRow<T>[]>((rows, flow, flowIndex) => {
         const locations = flow.locations ?? [];
-        const scopes = parseTraceScopes(flow.properties?.scopes, locations.length);
+        const scopes = parseTraceHeaders(locations);
         const expansion = new Map<string, boolean>();
         expandedScopes.forEach((open, key) => {
             if (key.startsWith(`${flowIndex}:`)) expansion.set(key.slice(`${flowIndex}:`.length), open);
@@ -157,62 +157,44 @@ export function buildThreadTraceRows<T extends TraceStep>(flows: TraceFlow<T>[],
     }, []);
 }
 
-// A property bag is untrusted: reject invalid or crossing ranges instead of
-// constructing a misleading trace. The caller then uses the legacy flat view.
-export function parseTraceScopes(value: unknown, locationCount: number): TraceScope[] | undefined {
-    if (!Array.isArray(value) || !value.length) return undefined;
-    const scopes = value as TraceScope[];
-    const byId = new Map<string, TraceScope>();
-    for (const scope of scopes) {
-        if (!scope || typeof scope.id !== 'string' || !scope.id || byId.has(scope.id) ||
-            typeof scope.kind !== 'string' || (scope.parentId !== null && typeof scope.parentId !== 'string') ||
-            !Number.isInteger(scope.startIndex) || !Number.isInteger(scope.endIndex) ||
-            scope.startIndex < 0 || scope.endIndex > locationCount || scope.startIndex >= scope.endIndex ||
-            (scope.logicalLocationIndex !== undefined &&
-                (!Number.isInteger(scope.logicalLocationIndex) || scope.logicalLocationIndex < 0))) return undefined;
-        byId.set(scope.id, scope);
-    }
-    for (const scope of scopes) {
-        if (scope.parentId !== null) {
-            const parent = byId.get(scope.parentId);
-            if (!parent || parent === scope || parent.startIndex > scope.startIndex ||
-                parent.endIndex < scope.endIndex) return undefined;
-        }
-    }
-    const depth = (scope: TraceScope): number => {
-        let count = 0;
-        const seen = new Set<string>();
-        for (let parent = scope.parentId; parent; parent = byId.get(parent)?.parentId ?? null) {
-            if (seen.has(parent)) return Number.POSITIVE_INFINITY;
-            seen.add(parent);
-            count++;
-        }
-        return count;
-    };
-    const ordered = scopes.slice().sort((a, b) => a.startIndex - b.startIndex ||
-        b.endIndex - a.endIndex || depth(a) - depth(b));
-    if (ordered.some(scope => !Number.isFinite(depth(scope)))) return undefined;
+/** Parse preorder headers; IDs are flow-local TFL indexes and ends are exclusive.
+ * No headers or malformed hierarchy means the caller must use the flat view.
+ * Only headers can be parents. Old scope-table metadata is never consulted.
+ */
+export function parseTraceHeaders(locations: TraceStep[]): TraceScope[] | undefined {
+    if (!locations.some(step => step.kinds?.includes('group'))) return undefined;
+    const scopes: TraceScope[] = [];
     const stack: TraceScope[] = [];
-    for (const scope of ordered) {
-        while (stack.length && scope.startIndex >= stack[stack.length - 1].endIndex) stack.pop();
-        const parent = stack[stack.length - 1];
-        if (scope.parentId !== (parent?.id ?? null) ||
-            (parent && scope.endIndex > parent.endIndex)) return undefined;
+    for (let index = 0; index < locations.length; index++) {
+        const step = locations[index];
+        const depth = step.nestingLevel;
+        if (depth === undefined || !Number.isInteger(depth) || depth < 0) return undefined;
+        while (stack.length && locations[stack[stack.length - 1].startIndex].nestingLevel! >= depth) {
+            stack.pop()!.endIndex = index;
+        }
+        if (depth !== stack.length) return undefined;
+        if (!step.kinds?.includes('group')) continue;
+        const kinds = ['function', 'action', 'declarations'].filter(kind => step.kinds!.includes(kind));
+        if (kinds.length !== 1) return undefined;
+        const scope: TraceScope = {
+            id: String(index), kind: kinds[0], parentId: stack.length ? stack[stack.length - 1].id : null,
+            startIndex: index, endIndex: locations.length,
+            relevant: kinds[0] === 'action' && traceImportance(step) !== 'unimportant',
+        };
+        scopes.push(scope);
         stack.push(scope);
     }
-    return ordered;
+    return scopes;
 }
 
 function noteIsRelevant(location: TraceStep): boolean {
     const level = location.properties?.noteLevel;
-    return typeof level === 'number' && level <= 1 && level >= 0;
+    if (typeof level === 'number') return level <= 1 && level >= 0;
+    return !!location.kinds?.includes('note') && traceImportance(location) !== 'unimportant';
 }
 
-function scopeLabel(scope: TraceScope, logicalLocations: TraceLogicalLocation[], locations: TraceStep[]): string {
-    const logical = scope.logicalLocationIndex === undefined ? undefined : logicalLocations[scope.logicalLocationIndex];
-    const entry = locations[scope.startIndex]?.location?.message?.text;
-    return logical?.name || logical?.fullyQualifiedName ||
-        (scope.kind === 'functionCall' ? entry : undefined) ||
+function scopeLabel(scope: TraceScope, locations: TraceStep[]): string {
+    return locations[scope.startIndex]?.location?.message?.text ||
         (scope.kind === 'declarations' ? 'Declarations' : scope.kind);
 }
 
@@ -243,13 +225,15 @@ export function projectScopedTrace<T extends TraceStep>(
         headers.set(scope.startIndex, list);
         if (scope.kind === 'action' && scope.relevant) markPath(scope, false);
     }
+    const notePath: TraceScope[] = [];
     for (let index = 0; index < locations.length; index++) {
+        while (notePath.length && index >= notePath[notePath.length - 1].endIndex) notePath.pop();
+        notePath.push(...(headers.get(index) || []));
         if (!noteIsRelevant(locations[index])) continue;
         const sourceIndex = locations[index].properties?.sourceStepIndex;
         if (typeof sourceIndex === 'number' && Number.isInteger(sourceIndex) &&
             sourceIndex >= 0 && sourceIndex < locations.length) sourcesWithVitalNotes.add(sourceIndex);
-        const containing = scopes.filter(scope => scope.startIndex <= index && index < scope.endIndex);
-        markPath(containing[containing.length - 1], true);
+        markPath(notePath[notePath.length - 1], true);
     }
 
     const isOpen = (scope: TraceScope) => expansion.get(scope.id) ?? defaultOpen.has(scope.id);
@@ -260,29 +244,16 @@ export function projectScopedTrace<T extends TraceStep>(
         expansion.get(scope.id) === true && showOnCollapse.has(scope.id) && path.slice(index).every(isOpen));
     const rows: ScopedTraceRow<T>[] = [];
     const active: TraceScope[] = [];
-    const headerStepIndexes = new Set<number>();
-    const callEntryIndexes = new Map<string, number>();
-    for (const scope of scopes) {
-        if (scope.kind !== 'functionCall') continue;
-        // Notes associated with the call can precede its entry step.
-        const entry = locations.findIndex((step, index) => index >= scope.startIndex && index < scope.endIndex &&
-            step.kinds?.includes('enter') && step.kinds?.includes('function') &&
-            !scopes.some(child => child.parentId === scope.id && child.startIndex <= index && index < child.endIndex));
-        if (entry >= 0) {
-            headerStepIndexes.add(entry);
-            callEntryIndexes.set(scope.id, entry);
-        }
-    }
+    const headerStepIndexes = new Set(scopes.map(scope => scope.startIndex));
     for (let index = 0; index < locations.length; index++) {
         while (active.length && index >= active[active.length - 1].endIndex) active.pop();
         const starting = headers.get(index) || [];
         for (const scope of starting) {
             const parentVisible = pathIsOpen(active);
             if (parentVisible || showOnCollapse.has(scope.id)) {
-                rows.push({type: 'scope', scope, label: scopeLabel(scope, logicalLocations, locations),
+                rows.push({type: 'scope', index, scope, label: scopeLabel(scope, locations),
                     open: isOpen(scope), depth: active.length,
-                    location: scope.kind === 'functionCall' ? locations[callEntryIndexes.get(scope.id) ?? scope.startIndex] :
-                        locations[scope.startIndex]});
+                    location: locations[scope.startIndex]});
             }
             active.push(scope);
         }

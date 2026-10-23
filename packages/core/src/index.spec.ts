@@ -2,16 +2,23 @@
 // Licensed under the MIT License.
 
 import assert from 'assert';
-import { TraceFlow, TraceStep } from './index';
-import { buildThreadTraceRows, buildTraceItems, defaultTraceThreadIndex, isCollapsedTraceGroup, parseTraceScopes, projectScopedTrace,
+import { TraceFlow, TraceStep, buildThreadTraceRows, buildTraceItems, defaultTraceThreadIndex,
+    isCollapsedTraceGroup, parseTraceHeaders, projectScopedTrace,
     traceBaseNestingLevel, traceImportance, traceNestingDepth } from './index';
 
 function step(importance?: TraceStep['importance'], nestingLevel?: number): TraceStep {
-    return { importance, nestingLevel };
+    return {importance, nestingLevel};
+}
+function header(kind: string, depth: number, label = kind, importance: TraceStep['importance'] = 'unimportant'): TraceStep {
+    return {...step(importance, depth), kinds: ['group', kind], location: {message: {text: label}}};
+}
+function visible(locations: TraceStep[], expansion = new Map<string, boolean>()): Array<string | number> {
+    return projectScopedTrace(locations, parseTraceHeaders(locations)!, [], expansion)
+        .map(row => row.type === 'scope' ? row.scope.id : row.index);
 }
 
-describe('TraceView', () => {
-    it('shows all threads in order and resets indentation for each flow', () => {
+describe('Trace core', () => {
+    it('shows threads in order with independent indentation', () => {
         const flows: TraceFlow[] = [
             {id: 'global', locations: [step('important', 0)]},
             {id: '1', locations: [step('important', 2), step('essential', 4)]},
@@ -20,66 +27,48 @@ describe('TraceView', () => {
         const rows = buildThreadTraceRows(flows, [], new Map(), new Set(), false);
         assert.deepStrictEqual(rows.map(row => row.flowId), ['global', '1', '1', '2']);
         assert.deepStrictEqual(rows.map(row => row.flowIndex), [0, 1, 1, 2]);
-        assert.deepStrictEqual(rows.map(row => traceNestingDepth(row.item as TraceStep, row.baseNestingLevel)),
-            [0, 0, 2, 0]);
+        assert.deepStrictEqual(rows.map(row => traceNestingDepth(row.item as TraceStep, row.baseNestingLevel)), [0, 0, 2, 0]);
     });
 
-    it('keeps equal scope IDs and legacy collapse groups independent between threads', () => {
+    it('keeps equal header IDs and flat collapse groups independent between threads', () => {
+        const locations = [header('action', 0), step('unimportant', 1)];
         const flows: TraceFlow[] = [
-            {id: '1', locations: [step('unimportant'), step('unimportant')],
-                properties: {scopes: [{id: 'action', kind: 'action', parentId: null, startIndex: 0, endIndex: 2}]}},
-            {id: '2', locations: [step('unimportant'), step('unimportant')],
-                properties: {scopes: [{id: 'action', kind: 'action', parentId: null, startIndex: 0, endIndex: 2}]}},
-            {id: '3', locations: [step('unimportant'), step('unimportant')]},
-            {id: '4', locations: [step('unimportant'), step('unimportant')]},
+            {locations}, {locations},
+            {locations: [step('unimportant'), step('unimportant')]},
+            {locations: [step('unimportant'), step('unimportant')]},
         ];
-        const rows = buildThreadTraceRows(flows, [], new Map([['1:action', true]]), new Set(['3:0-1']), false);
-        assert.deepStrictEqual(rows.map(row => [row.flowIndex,
-            'type' in row.item ? row.item.type : 'step']), [
-            [0, 'scope'], [1, 'scope'], [1, 'step'], [1, 'step'],
+        const rows = buildThreadTraceRows(flows, [], new Map([['1:0', true]]), new Set(['3:0-1']), false);
+        assert.deepStrictEqual(rows.map(row => [row.flowIndex, 'type' in row.item ? row.item.type : 'step']), [
+            [0, 'scope'], [1, 'scope'], [1, 'step'],
             [2, 'collapsed'], [3, 'collapsed'], [3, 'step'], [3, 'step'],
         ]);
     });
 
-    it('uses the SARIF default importance', () => {
+    it('uses the standard SARIF importance default', () => {
         assert.strictEqual(traceImportance(step()), 'important');
         assert.strictEqual(traceImportance(step('essential')), 'essential');
         assert.strictEqual(traceImportance(step('unimportant')), 'unimportant');
     });
 
-    it('selects the largest non-global thread for annotations by default', () => {
-        const flows: TraceFlow[] = [
-            {id: 'global', locations: [step()]},
-            {id: '2', locations: [step(), step()]},
-            {id: '5', locations: [step()]},
-        ];
+    it('selects the largest non-global thread', () => {
+        const flows = [{id: 'global', locations: [step(), step(), step()]},
+            {id: '2', locations: [step(), step()]}, {id: '5', locations: [step()]}];
         assert.strictEqual(defaultTraceThreadIndex(flows), 1);
         assert.strictEqual(defaultTraceThreadIndex([flows[0], flows[2], flows[1]]), 2);
         assert.strictEqual(defaultTraceThreadIndex(flows.slice(0, 1)), 0);
         assert.strictEqual(defaultTraceThreadIndex([]), 0);
-        assert.strictEqual(flows.reduce((count, flow) => count + flow.locations.length, 0), 4);
     });
 
-    it('normalizes nesting levels relative to the shallowest location', () => {
+    it('normalizes flat nesting levels', () => {
         const locations = [step('important', 2), step('important', 4), step()];
-        const baseLevel = traceBaseNestingLevel(locations);
-
-        assert.strictEqual(baseLevel, 2);
-        assert.strictEqual(traceNestingDepth(locations[0], baseLevel), 0);
-        assert.strictEqual(traceNestingDepth(locations[1], baseLevel), 2);
-        assert.strictEqual(traceNestingDepth(locations[2], baseLevel), 0);
+        const base = traceBaseNestingLevel(locations);
+        assert.strictEqual(base, 2);
+        assert.deepStrictEqual(locations.map(location => traceNestingDepth(location, base)), [0, 2, 0]);
     });
 
-    it('collapses consecutive unimportant locations in normal view', () => {
-        const locations = [
-            step('important'),
-            step('unimportant'),
-            step('unimportant'),
-            step('essential'),
-            step('unimportant'),
-        ];
+    it('collapses consecutive unimportant steps and expands only the requested group', () => {
+        const locations = [step('important'), step('unimportant'), step('unimportant'), step('essential'), step('unimportant')];
         const items = buildTraceItems(locations, false, new Set());
-
         assert.strictEqual(items.length, 4);
         assert.strictEqual(items[0], locations[0]);
         assert.ok(isCollapsedTraceGroup(items[1]));
@@ -87,131 +76,113 @@ describe('TraceView', () => {
             assert.strictEqual(items[1].key, '1-2');
             assert.deepStrictEqual(items[1].locations, locations.slice(1, 3));
         }
-        assert.strictEqual(items[2], locations[3]);
-        assert.ok(isCollapsedTraceGroup(items[3]));
-    });
-
-    it('expands one group without expanding the rest', () => {
-        const locations = [
-            step('important'),
-            step('unimportant'),
-            step('unimportant'),
-            step('essential'),
-            step('unimportant'),
-        ];
-        const items = buildTraceItems(locations, false, new Set(['1-2']));
-
-        assert.strictEqual(items.length, 6);
-        assert.ok(isCollapsedTraceGroup(items[1]));
-        assert.strictEqual(items[2], locations[1]);
-        assert.strictEqual(items[3], locations[2]);
-        assert.ok(isCollapsedTraceGroup(items[5]));
-    });
-
-    it('returns the original locations in full view', () => {
-        const locations = [step('important'), step('unimportant')];
+        const expanded = buildTraceItems(locations, false, new Set(['1-2']));
+        assert.strictEqual(expanded.length, 6);
+        assert.strictEqual(expanded[2], locations[1]);
+        assert.strictEqual(expanded[3], locations[2]);
+        assert.ok(isCollapsedTraceGroup(expanded[5]));
         assert.strictEqual(buildTraceItems(locations, true, new Set()), locations);
     });
 
-    it('keeps relevant actions and vital notes visible across collapsed ancestors', () => {
-        const locations: TraceStep[] = [
-            {kinds: ['enter', 'function'], location: {message: {text: 'start'}}},
-            {location: {message: {text: 'ordinary'}}},
-            {kinds: ['note'], importance: 'unimportant', properties: {noteLevel: 2}},
-            {kinds: ['note'], importance: 'important', properties: {noteLevel: 1}},
-            {kinds: ['enter', 'function'], location: {message: {text: 'callback'}}},
-            {location: {message: {text: 'hidden implementation'}}},
+    it('reconstructs nested, sibling and empty occurrences without mutating input', () => {
+        const locations = [header('function', 0, 'Call'), header('declarations', 1),
+            header('action', 1), step('unimportant', 2), header('function', 0, 'Call')];
+        locations[0].kinds = ['function', 'enter', 'group'];
+        const before = JSON.stringify(locations);
+        const scopes = parseTraceHeaders(locations)!;
+        assert.deepStrictEqual(scopes.map(s => [s.id, s.kind, s.parentId, s.startIndex, s.endIndex]), [
+            ['0', 'function', null, 0, 4], ['1', 'declarations', '0', 1, 2],
+            ['2', 'action', '0', 2, 4], ['4', 'function', null, 4, 5],
+        ]);
+        assert.strictEqual(JSON.stringify(locations), before);
+        const rows = projectScopedTrace(locations, scopes, [{name: 'Wrong label'}], new Map());
+        assert.deepStrictEqual(rows.map(row => row.type === 'scope' ? row.label : row.index), ['Call', 'Call']);
+        assert.strictEqual(rows[0].location, locations[0]);
+        assert.deepStrictEqual(rows.map(row => row.index), [0, 4]);
+    });
+
+    it('preserves relevant action and note paths beneath closed ancestors', () => {
+        const locations = [header('function', 0, 'Outer'), header('action', 1, 'Probe', 'important'),
+            step('unimportant', 2), {...step('important', 2), kinds: ['note'], properties: {noteLevel: 1}},
+            header('function', 2, 'Callback'), step('unimportant', 3)];
+        assert.deepStrictEqual(visible(locations), ['0', '1', 3, '4']);
+        assert.deepStrictEqual(visible(locations, new Map([['0', false]])), ['0', '1', 3]);
+        assert.deepStrictEqual(visible(locations, new Map([['4', true]])), ['0', '1', 3, '4', 5]);
+        assert.deepStrictEqual(visible(locations, new Map([['4', true], ['0', false]])), ['0', '1', 3]);
+    });
+
+    it('reopens a visible descendant without exposing unrelated branches', () => {
+        const locations = [header('function', 0), header('function', 1), header('declarations', 2),
+            step('unimportant', 3), header('action', 2, 'Relevant', 'important'), header('function', 1)];
+        assert.deepStrictEqual(visible(locations, new Map([['0', false]])), ['0', '1', '4']);
+        assert.deepStrictEqual(visible(locations, new Map([['0', false], ['1', true]])), ['0', '1', '2', '4']);
+        assert.deepStrictEqual(visible(locations, new Map([['0', false], ['1', true], ['2', true]])),
+            ['0', '1', '2', 3, '4']);
+    });
+
+    it('does not promote action bodies and honors omitted header importance', () => {
+        const locations = [header('action', 0, 'Probe', 'important'), step('unimportant', 1)];
+        delete locations[0].importance;
+        assert.strictEqual(parseTraceHeaders(locations)![0].relevant, true);
+        assert.deepStrictEqual(visible(locations), ['0']);
+        assert.deepStrictEqual(visible(locations, new Map([['0', true]])), ['0', 1]);
+    });
+
+    it('resolves backward entry notes and forward statement notes without duplicate headers', () => {
+        const locations = [header('function', 0, 'Call'),
+            {...step('essential', 1), kinds: ['note'], properties: {noteLevel: 0, sourceStepIndex: 0}},
+            {...step('important', 1), kinds: ['note'], properties: {noteLevel: 1, sourceStepIndex: 3}},
+            step('unimportant', 1),
+            {...step('unimportant', 1), kinds: ['assumption'], properties: {sourceStepIndex: 0}}];
+        assert.deepStrictEqual(visible(locations), ['0', 1, 2, 3]);
+        assert.deepStrictEqual(visible(locations, new Map([['0', false]])), ['0', 1, 2]);
+        assert.deepStrictEqual(visible(locations, new Map([['0', true]])), ['0', 1, 2, 3, 4]);
+        assert.strictEqual(locations[0].importance, 'unimportant');
+    });
+
+    it('ignores invalid source links safely', () => {
+        for (const sourceStepIndex of [-1, 50, 1.5, '0']) {
+            const locations = [header('function', 0),
+                {...step('important', 1), kinds: ['note'], properties: {noteLevel: 1, sourceStepIndex}}];
+            assert.deepStrictEqual(visible(locations), ['0', 1]);
+        }
+    });
+
+    it('uses standard importance for notes without a producer note level', () => {
+        const locations = [header('function', 0),
+            {...step(undefined, 1), kinds: ['note'], properties: {sourceStepIndex: 2}},
+            step('unimportant', 1),
+            {...step('unimportant', 1), kinds: ['note']},
+            {...step('essential', 1), kinds: ['note'], properties: {noteLevel: 3}},
         ];
-        const scopes = parseTraceScopes([
-            {id: 'call', kind: 'functionCall', parentId: null, startIndex: 0, endIndex: 6,
-                logicalLocationIndex: 0},
-            {id: 'action', kind: 'action', relevant: true, parentId: 'call', startIndex: 1, endIndex: 6,
-                logicalLocationIndex: 1},
-            {id: 'inner', kind: 'functionCall', parentId: 'action', startIndex: 4, endIndex: 6,
-                logicalLocationIndex: 2},
-        ], locations.length)!;
-        const logical = [{name: 'start'}, {name: 'Probe device'}, {name: 'callback'}];
-        const labels = (expansion: Map<string, boolean>) => projectScopedTrace(locations, scopes, logical, expansion)
-            .map(row => row.type === 'scope' ? `scope:${row.label}:${row.open}` : `step:${row.index}`);
-
-        // Open just the paths necessary to reach a relevant action and note.
-        assert.deepStrictEqual(labels(new Map()), [
-            'scope:start:true', 'scope:Probe device:true', 'step:3',
-            'scope:callback:false',
-        ]);
-        // Closing a parent hides ordinary rows, but not the relevant path.
-        assert.deepStrictEqual(labels(new Map([['call', false]])), [
-            'scope:start:false', 'scope:Probe device:true', 'step:3',
-        ]);
-        // Reopening does not reset the explicitly expanded inner scope.
-        assert.deepStrictEqual(labels(new Map([['inner', true]])), [
-            'scope:start:true', 'scope:Probe device:true', 'step:3',
-            'scope:callback:true', 'step:5',
-        ]);
-        assert.deepStrictEqual(labels(new Map([['inner', true], ['call', false]])), [
-            'scope:start:false', 'scope:Probe device:true', 'step:3',
-        ]);
+        assert.deepStrictEqual(visible(locations), ['0', 1, 2]);
+        assert.deepStrictEqual(visible(locations, new Map([['0', false]])), ['0', 1]);
     });
 
-    it('shows children of an explicitly reopened visible function without reopening its closed ancestor', () => {
-        const locations = [step(), step(), step(), step(), step()];
-        const scopes = parseTraceScopes([
-            {id: 'outer', kind: 'functionCall', parentId: null, startIndex: 0, endIndex: 5},
-            {id: 'inner', kind: 'functionCall', parentId: 'outer', startIndex: 1, endIndex: 4},
-            {id: 'declarations', kind: 'declarations', parentId: 'inner', startIndex: 2, endIndex: 3},
-            {id: 'relevant', kind: 'action', relevant: true, parentId: 'inner', startIndex: 3, endIndex: 4},
-        ], locations.length)!;
-        const visible = (expansion: Map<string, boolean>) => projectScopedTrace(locations, scopes, [], expansion)
-            .map(row => row.type === 'scope' ? row.scope.id : `step:${row.index}`);
-
-        assert.deepStrictEqual(visible(new Map([['outer', false]])), ['outer', 'inner', 'relevant']);
-        assert.deepStrictEqual(visible(new Map([['outer', false], ['inner', true]])),
-            ['outer', 'inner', 'step:1', 'declarations', 'relevant']);
-        assert.deepStrictEqual(visible(new Map([['outer', false], ['inner', true], ['declarations', true]])),
-            ['outer', 'inner', 'step:1', 'declarations', 'step:2', 'relevant']);
-    });
-
-    it('treats a relevant action header differently from its body', () => {
-        const locations = [step('unimportant'), step('unimportant')];
-        const scopes = parseTraceScopes([
-            {id: 'action', kind: 'action', parentId: null, startIndex: 0, endIndex: 2, relevant: true,
-                logicalLocationIndex: 0},
-        ], locations.length)!;
-        const rows = projectScopedTrace(locations, scopes, [{name: 'Probe'}], new Map());
-        assert.deepStrictEqual(rows.map(row => row.type), ['scope']);
-        assert.deepStrictEqual(projectScopedTrace(locations, scopes, [{name: 'Probe'}],
-            new Map([['action', true]])).map(row => row.type), ['scope', 'step', 'step']);
-    });
-
-    it('rejects invalid or crossing scope ranges and preserves the legacy fallback', () => {
-        assert.strictEqual(parseTraceScopes(undefined, 4), undefined);
-        assert.strictEqual(parseTraceScopes([{id: 'x', kind: 'action', parentId: null,
-            startIndex: 0, endIndex: 5}], 4), undefined);
-        assert.strictEqual(parseTraceScopes([
-            {id: 'a', kind: 'action', parentId: null, startIndex: 0, endIndex: 3},
-            {id: 'b', kind: 'action', parentId: null, startIndex: 2, endIndex: 4},
-        ], 4), undefined);
-        const locations = [step('important'), step('unimportant')];
-        assert.strictEqual(buildTraceItems(locations, false, new Set()).length, 2);
-    });
-
-    it('accepts nested scopes that cover the same steps and separate note/source links', () => {
-        const locations: TraceStep[] = [
-            {location: {message: {text: 'vital'}}, kinds: ['note'],
-                properties: {noteLevel: 1, sourceStepIndex: 1}},
-            {location: {message: {text: 'source'}}},
+    it('rejects malformed headers and depths and falls back to flat rendering', () => {
+        const invalid = [
+            [header('function', 1)],
+            [header('function', 0), step('important', 2)],
+            [header('function', 0), step('important')],
+            [header('function', 0), step('important', -1)],
+            [header('function', 0), step('important', 0.5)],
+            [header('function', 0), step('important', NaN)],
+            [header('unknown', 0)],
+            [{...header('function', 0), kinds: ['group', 'function', 'action']}],
+            [header('function', 0), step('important', 1), step('important', 2)],
         ];
-        const scopes = parseTraceScopes([
-            {id: 'declarations', kind: 'declarations', parentId: 'action', startIndex: 0, endIndex: 2},
-            {id: 'call', kind: 'functionCall', parentId: null, startIndex: 0, endIndex: 2},
-            {id: 'action', kind: 'action', parentId: 'call', startIndex: 0, endIndex: 2},
-        ], locations.length)!;
-        assert.deepStrictEqual(scopes.map(scope => scope.id), ['call', 'action', 'declarations']);
-        const rows = projectScopedTrace(locations, scopes, [], new Map());
-        assert.deepStrictEqual(rows.map(row => row.type === 'scope' ? row.scope.id : row.index),
-            ['call', 'action', 'declarations', 0, 1]);
-        assert.deepStrictEqual(projectScopedTrace(locations, scopes, [], new Map([['call', false]]))
-            .map(row => row.type === 'scope' ? row.scope.id : row.index),
-        ['call', 'action', 'declarations', 0]);
+        for (const locations of invalid) {
+            assert.strictEqual(parseTraceHeaders(locations), undefined);
+            const rows = buildThreadTraceRows([{locations}], [], new Map(), new Set(), true);
+            assert.deepStrictEqual(rows.map(row => row.item), locations);
+        }
+        assert.strictEqual(parseTraceHeaders([]), undefined);
+        assert.strictEqual(parseTraceHeaders([step()]), undefined);
+    });
+
+    it('ignores old scope metadata even when valid', () => {
+        const locations = [step('important'), step('important')];
+        const flow = {locations, properties: {scopes: [{id: 'old', kind: 'action', parentId: null, startIndex: 0, endIndex: 2}]}};
+        assert.deepStrictEqual(buildThreadTraceRows([flow], [], new Map(), new Set(), false).map(row => row.item), locations);
     });
 });

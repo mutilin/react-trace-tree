@@ -3,7 +3,7 @@
 
 import * as React from 'react';
 import {
-    buildThreadTraceRows, defaultTraceThreadIndex, isCollapsedTraceGroup, parseTraceScopes,
+    buildThreadTraceRows, defaultTraceThreadIndex, isCollapsedTraceGroup, parseTraceHeaders,
     TraceFlow, TraceLogicalLocation, TraceScope, TraceStep, ThreadTraceRow,
     traceImportance, traceNestingDepth,
 } from '@mutilin/trace-tree-core';
@@ -63,14 +63,13 @@ export class TraceTree<T extends TraceStep> extends React.Component<TraceTreePro
         }
     }
 
-    private scopeKey(flowIndex: number, scopeId: string) { return `${flowIndex}:scope:${scopeId}`; }
     private groupKey(flowIndex: number, groupId: string) { return `${flowIndex}:group:${groupId}`; }
 
     private changeScope(flowIndex: number, scope: TraceScope, open: boolean) {
         this.setState(state => {
             const expandedScopes = new Map(state.expandedScopes);
             expandedScopes.set(`${flowIndex}:${scope.id}`, open);
-            return {expandedScopes, selectedKey: undefined};
+            return {expandedScopes};
         });
     }
 
@@ -78,20 +77,25 @@ export class TraceTree<T extends TraceStep> extends React.Component<TraceTreePro
         const {item, flowIndex, locations, baseNestingLevel} = row;
         const gutter = threadGutter(this.props.flows, flowIndex);
         if ('type' in item && item.type === 'scope') {
-            const key = this.scopeKey(flowIndex, item.scope.id);
-            const details = item.location && this.props.getStepDetails?.(item.location);
-            return <div className="rtt-row" style={gutter} key={key}>
+            const key = `${flowIndex}:step:${item.index}`;
+            const details = this.props.getStepDetails?.(item.location);
+            return <div className={`rtt-row rtt-${traceImportance(item.location)}${(this.props.selection ?? this.state.selectedKey) === key ? ' rtt-selected' : ''}`}
+                style={gutter} key={key}>
                 <div className="rtt-main rtt-scope" style={{paddingLeft: item.depth * 16}}>
-                    <button type="button" aria-expanded={item.open} onClick={() => {
+                    <button type="button" className="rtt-disclosure" aria-label={`${item.open ? 'Collapse' : 'Expand'} ${item.label}`}
+                        aria-expanded={item.open} onClick={() => {
                         this.changeScope(flowIndex, item.scope, !item.open);
                         this.props.onToggleScope?.(item.scope, item.location, flowIndex);
                     }}>
-                        <span aria-hidden="true">{item.open ? '▾' : '▸'}</span> {item.label}
-                        {item.scope.relevant && <span className="rtt-relevant">relevant</span>}
+                        <span aria-hidden="true">{item.open ? '▾' : '▸'}</span>
                     </button>
+                    <span className="rtt-number">{item.index + 1}</span>
+                    <button type="button" className="rtt-header-label" aria-label={`Step ${item.index + 1}: ${item.label}`}
+                        onClick={() => this.selectStep(item.location, flowIndex, item.index, key)}>{item.label}</button>
+                    {item.scope.relevant && <span className="rtt-relevant">relevant</span>}
                 </div>
                 <div className="rtt-file">{details?.file ?? '—'}</div>
-                <div className="rtt-line">{details?.line ?? '—'}</div>
+                <div className="rtt-line">{details?.line === undefined ? '—' : `${details.line}:${details.column ?? 1}`}</div>
             </div>;
         }
         if (isCollapsedTraceGroup(item)) {
@@ -112,7 +116,7 @@ export class TraceTree<T extends TraceStep> extends React.Component<TraceTreePro
         const step = 'type' in item ? item.location : item;
         const stepIndex = 'type' in item ? item.index : locations.indexOf(item);
         const key = `${flowIndex}:step:${stepIndex}`;
-        const details = this.props.getStepDetails?.(step) ?? {message: step.location?.message?.text};
+        const details: StepDetails = {message: step.location?.message?.text, ...this.props.getStepDetails?.(step)};
         const depth = traceNestingDepth(step, baseNestingLevel);
         return <div className={`rtt-row rtt-step rtt-${traceImportance(step)}${(this.props.selection ?? this.state.selectedKey) === key ? ' rtt-selected' : ''}`}
             style={gutter} key={key} tabIndex={0} role="button" aria-label={`Step ${stepIndex + 1}: ${details.message ?? '—'}`}
@@ -146,11 +150,10 @@ export class TraceTree<T extends TraceStep> extends React.Component<TraceTreePro
         const {flows, logicalLocations = [], className} = this.props;
         const {expandedScopes, expandedGroups, showAll} = this.state;
         const rows = buildThreadTraceRows(flows, logicalLocations, expandedScopes, expandedGroups, showAll);
-        const scopes = flows.map(flow => parseTraceScopes(flow.properties?.scopes, flow.locations.length));
+        const scopes = flows.map(flow => parseTraceHeaders(flow.locations));
         const unimportantCount = flows.reduce((count, flow, index) => count +
             (scopes[index] ? 0 : flow.locations.filter(step => traceImportance(step) === 'unimportant').length), 0);
-        const visibleSteps = rows.filter(row => !isCollapsedTraceGroup(row.item) &&
-            (!('type' in row.item) || row.item.type === 'step')).length;
+        const visibleSteps = rows.filter(row => !isCollapsedTraceGroup(row.item)).length;
         return <div className={`rtt-tree${className ? ` ${className}` : ''}`}>
             <div className="rtt-toolbar">
                 <span>{visibleSteps} visible steps across {flows.length} threads</span>

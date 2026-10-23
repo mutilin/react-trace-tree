@@ -38,18 +38,48 @@ import '@mutilin/react-trace-tree/dist/style.css';
 
 The component also supports `selection`, `onSelect`, and `onActivate` for an
 Arborist-like single-step selection API. Step IDs are `flowIndex:step:stepIndex`.
-`onToggleScope` receives a scope, its representative step, and the flow index.
+`onToggleScope` receives a reconstructed scope, its actual header TFL, and the
+flow index. Its disclosure button only changes expansion; the separate header
+label button selects/navigates the header using the same original-TFL-index
+callbacks as ordinary steps. Header rows are included in the visible-step count.
 Rendering is controlled by React; editor navigation is supplied by the caller.
 The optional `getStepDetails` callback provides file, line, column, and message
 labels when these cannot be read directly from a step.
 
 The core accepts structural `TraceFlow`/`TraceStep` data (SARIF thread flows
-are compatible) with optional `flow.properties.scopes`. Each scope has a unique
-`id` **within its flow**, `kind`, `parentId`, and half-open `startIndex` / `endIndex`
-range into that flow's `locations`. Optional `logicalLocationIndex` refers to
-`logicalLocations`; `relevant` marks an action. Steps may specify
-`properties.noteLevel` (0/1 are vital) and `properties.sourceStepIndex` to link
-a note to its source. Without valid scopes, importance-based grouping is used.
+are compatible). `parseTraceHeaders(locations)` reconstructs groups from TFLs
+whose `kinds` contain `"group"` and exactly one of `"function"`, `"action"`, or
+`"declarations"`. Kind order does not matter. Every TFL in a grouped trace must
+have a nonnegative integer `nestingLevel`: roots are level 0, children are one
+level deeper, and only headers can be parents. A function entry is its own
+header, typically with `kinds: ["group", "enter", "function"]`; it is rendered
+once, not as an additional source row.
+
+Reconstructed scopes have IDs equal to their header's zero-based TFL index
+**within its flow**, a `parentId`, and half-open `startIndex` / `endIndex` ranges
+including the header. Labels come from the header's `location.message.text`;
+logical locations are not required. Expansion keys passed to
+`buildThreadTraceRows` are `flowIndex:headerIndex`. Important or essential action
+headers mark relevant actions; missing importance still means `"important"`
+according to SARIF. Producers wanting an unimportant default must emit it
+explicitly.
+
+Steps may specify `properties.noteLevel` (0/1 are vital) and
+`properties.sourceStepIndex` to link a note or assumption to its source. Call
+notes follow their header at the next depth and point backward to it; ordinary
+statement notes may precede their source and point forward. Separate notes do
+not change the source's importance. Vital notes and relevant action paths stay
+visible beneath closed ancestors, and a visible descendant can be reopened
+independently.
+
+Old `flow.properties.scopes` metadata is ignored. Missing headers or malformed
+header hierarchies use flat importance-based grouping instead.
+
+The core no longer exports `parseTraceScopes`. The React adapter and demo use
+the header API. Projected scope rows expose `index` and `location` for the actual
+header TFL; scope row types and projection signatures otherwise remain available.
+Relevant notes use `noteLevel` when supplied, or standard note `kinds` and SARIF
+importance otherwise.
 
 The core runs projection independently for each flow. The React package owns
 presentation, expansion state, and thread gutters; neither package knows about
