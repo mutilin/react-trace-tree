@@ -56,8 +56,8 @@ once, not as an additional source row.
 
 Reconstructed scopes have IDs equal to their header's zero-based TFL index
 **within its flow**, a `parentId`, and half-open `startIndex` / `endIndex` ranges
-including the header. Labels come from the header's `location.message.text`;
-logical locations are not required. Expansion keys passed to
+including the header. Labels come from the header's `location.message.text`.
+Expansion keys passed to
 `buildThreadTraceRows` are `flowIndex:headerIndex`. Important or essential action
 headers mark relevant actions; missing importance still means `"important"`
 according to SARIF. Producers wanting an unimportant default must emit it
