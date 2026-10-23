@@ -4,7 +4,7 @@
 import * as React from 'react';
 import {
     buildThreadTraceRows, defaultTraceThreadIndex, isCollapsedTraceGroup, parseTraceHeaders,
-    TraceFlow, TraceLogicalLocation, TraceScope, TraceStep, ThreadTraceRow,
+    TraceFlow, TraceScope, TraceStep, ThreadTraceRow,
     traceImportance, traceNestingDepth,
 } from '@mutilin/trace-tree-core';
 
@@ -26,7 +26,6 @@ export interface TraceNode<T extends TraceStep> {
 
 export interface TraceTreeProps<T extends TraceStep> {
     flows: TraceFlow<T>[];
-    logicalLocations?: TraceLogicalLocation[];
     getStepDetails?: (step: T) => StepDetails;
     selection?: string;
     onSelect?: (nodes: TraceNode<T>[]) => void;
@@ -147,9 +146,9 @@ export class TraceTree<T extends TraceStep> extends React.Component<TraceTreePro
     }
 
     render() {
-        const {flows, logicalLocations = [], className} = this.props;
+        const {flows, className} = this.props;
         const {expandedScopes, expandedGroups, showAll} = this.state;
-        const rows = buildThreadTraceRows(flows, logicalLocations, expandedScopes, expandedGroups, showAll);
+        const rows = buildThreadTraceRows(flows, [], expandedScopes, expandedGroups, showAll);
         const scopes = flows.map(flow => parseTraceHeaders(flow.locations));
         const unimportantCount = flows.reduce((count, flow, index) => count +
             (scopes[index] ? 0 : flow.locations.filter(step => traceImportance(step) === 'unimportant').length), 0);

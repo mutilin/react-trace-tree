@@ -28,9 +28,8 @@ describe('TraceTree', () => {
     ]}];
 
     it('renders the actual header once when closed, without requiring logical locations', () => {
-        const html = ReactDOMServer.renderToStaticMarkup(<TraceTree flows={scoped} logicalLocations={[{name: 'Wrong label'}]} />);
+        const html = ReactDOMServer.renderToStaticMarkup(<TraceTree flows={scoped} />);
         assert.ok(html.includes('Step 1: Function header'));
-        assert.ok(!html.includes('Wrong label'));
         assert.ok(!html.includes('hidden body'));
         assert.ok(html.includes('1 visible steps'));
         assert.ok(!html.includes('Show full trace'));

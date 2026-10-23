@@ -20,7 +20,7 @@ function App() {
         <p>{result?.message?.text ?? 'Analysis trace'}. {artifacts.length} artifacts, {flows.length} thread flows.</p>
         <p>Use arrows to expand groups; select a header or step to view its source. Global declarations have no thread marker.</p>
         <div style={{height: 380, border: '1px solid #ccc'}}>
-            <TraceTree flows={flows} logicalLocations={run.logicalLocations}
+            <TraceTree flows={flows}
                 getStepDetails={step => getStepDetails(step, artifacts)}
                 onSelectStep={(step, flowIndex, stepIndex) => setSelection({step, flowIndex, stepIndex})} />
         </div>

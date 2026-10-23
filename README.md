@@ -30,7 +30,6 @@ import '@mutilin/react-trace-tree/dist/style.css';
 
 <TraceTree
   flows={threadFlows}
-  logicalLocations={logicalLocations}
   getStepDetails={step => ({message: step.location?.message?.text})}
   onSelectStep={(step, flowIndex, stepIndex) => openLocation(step, flowIndex, stepIndex)}
 />

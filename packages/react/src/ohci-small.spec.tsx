@@ -20,8 +20,8 @@ function toolbar(view: any, label: string) {
 
 describe('Small OHCI SARIF React integration', () => {
     it('renders default relevance, sequential threads and their gutters from real SARIF', () => {
-        const {flows, logicalLocations} = loadOhci();
-        const view = renderer.create(<TraceTree flows={flows} logicalLocations={logicalLocations} getStepDetails={details} />);
+        const {flows} = loadOhci();
+        const view = renderer.create(<TraceTree flows={flows} getStepDetails={details} />);
         try {
             const rows = view.root.findAll((node: any) => node.type === 'div' && /^rtt-row\b/.test(node.props.className));
             assert.strictEqual(rows.length, 14);
