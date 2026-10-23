@@ -1,26 +1,154 @@
 # React Trace Tree
 
-A reusable trace viewer extracted from the SARIF VS Code extension. The UI shows
-thread flows in sequence with colored gutters and preserves relevant
-actions and vital notes when a scope is collapsed. No dependency on react-arborist.
+A reusable header-based trace viewer that may be used in results visualizers
+such as SARIF VS Code and CodeChecker. It shows thread flows sequentially with
+colored gutters and preserves relevant actions and vital notes beneath
+collapsed ancestors. No dependency on react-arborist.
 
-This repository contains two unpublished packages:
+This repository contains two packages:
 
-- `@mutilin/trace-tree-core` — React-free scope validation and visibility projection.
+- `@mutilin/trace-tree-core` — React-free header validation, hierarchy reconstruction
+  and visibility projection. It can also support non-React renderers, such as a
+  Vue-based CodeChecker integration.
 - `@mutilin/react-trace-tree` — `<TraceTree>` component and CSS (React 16.13.1+).
 
-## Development
+These are reusable building blocks, not complete integrations with those
+applications. Consumers supply artifact resolution and editor navigation.
 
-```sh
-npm install
-npm run build
-npm test
-npm run demo           # http://127.0.0.1:5173
+## Header-based trace format
+
+The implementation follows the header convention implemented by Klever's
+`sarif_converter_2.py` and described in its `docs/sarif_mapping.rst`. The core
+accepts structural `TraceFlow` / `TraceStep` objects without depending on a
+SARIF package. In SARIF, a flow is a `threadFlow` and each step is a
+`threadFlowLocation` (TFL) in its ordered `locations` array.
+
+### Headers and containment
+
+Each group starts with an actual TFL whose `kinds` contain `"group"` and
+**exactly one** of these group kinds:
+
+| Group | Typical `kinds` | Meaning |
+| --- | --- | --- |
+| Function | `["group", "enter", "function"]` | The function entry itself is the header; do not add a duplicate entry row. |
+| Action | `["group", "action"]` | A labeled group of steps, not an additional execution event. |
+| Declarations | `["group", "declarations"]` | A declarations group, including global declarations; normally labeled `Declarations`. |
+
+Kind order does not matter. `"function"` and `"enter"` are standard SARIF kinds;
+`"group"`, `"action"` and `"declarations"` are producer conventions, not a
+standard SARIF collapse/expand feature.
+
+Put the header label in `location.message.text`. Every TFL in a grouped flow
+must have a nonnegative integer `nestingLevel`. Emit the flow as an ordered
+forest in preorder:
+
+- Roots have level 0; direct children are one level deeper.
+- Only headers can be parents. Equal levels represent siblings.
+- A header's body ends before the first following TFL at the same or a
+  shallower level, or at the end of the flow.
+- Empty groups still have headers. A function header with no children still
+  represents an entry event.
+
+For example, this is a complete `threadFlow`:
+
+```json
+{
+  "id": "1",
+  "locations": [
+    {
+      "nestingLevel": 0,
+      "kinds": ["group", "enter", "function"],
+      "importance": "unimportant",
+      "location": {"message": {"text": "Probe controller"}}
+    },
+    {
+      "nestingLevel": 1,
+      "kinds": ["note"],
+      "importance": "important",
+      "location": {"message": {"text": "Driver probe entered"}},
+      "properties": {"noteLevel": 1, "sourceStepIndex": 0}
+    },
+    {
+      "nestingLevel": 1,
+      "kinds": ["group", "action"],
+      "importance": "important",
+      "location": {"message": {"text": "Enable clock"}}
+    },
+    {
+      "nestingLevel": 2,
+      "importance": "unimportant",
+      "location": {"message": {"text": "Update clock state"}}
+    }
+  ]
+}
 ```
 
-`npm run demo:build` checks the standalone demo bundle. The VS Code extension
-uses local `file:` dependencies until the packages are published. Build the
-packages before building or launching the extension in the sibling directory.
+`parseTraceHeaders(locations)` validates the convention and reconstructs
+scope occurrences with `id`, `kind`, `parentId`, `startIndex` and exclusive
+`endIndex`. Ranges include their header. IDs are the header's zero-based TFL
+index within its flow; they identify occurrences, not reusable functions, and
+are not stable across trace edits. All headers, notes and assumptions count
+toward the original TFL indexes.
+
+Flows without headers, or with invalid header kinds or depths, use
+flat importance-based grouping instead of an invented hierarchy.
+
+### Importance, notes and source
+
+Missing `importance` means `"important"`, as required by SARIF. Klever emits
+`"unimportant"` explicitly by default and overrides it for relevant action
+headers and notes. An important or essential **action header** is relevant;
+header importance does not propagate to its children or force its body open.
+
+| `properties.noteLevel` | Klever's emitted `importance` | Visibility policy |
+| --- | --- | --- |
+| 0 | `essential` | Vital note |
+| 1 | `important` | Vital note |
+| 2 or 3 | `unimportant` | Detail shown when its containing path is explicitly expanded |
+
+When `noteLevel` is absent, the viewer recognizes a vital note through
+`kinds` containing `"note"` and importance other than `"unimportant"`.
+
+`properties.sourceStepIndex` associates a separate note or assumption with a
+source TFL in the **same flow**, not with a visible-row number:
+
+- Function-entry notes follow their merged entry/header as children at the
+  next level and point backward to it. Call assumptions follow the notes.
+- Notes on ordinary source steps precede the source at the same level and
+  point forward; assumptions follow the source at that level.
+- A note hiding non-call source shares its TFL with that source: the message
+  holds the note, while `location.physicalLocation.region.snippet.text` keeps
+  the source. Function-call notes remain separate so the header label survives.
+- Separate notes retain their own importance; they do not promote their source.
+
+Physical locations on actual headers and steps support navigation. Do not
+invent coordinates for headers without source locations. Embedded files may
+be supplied in `run.artifacts[].contents.text`. Artifact lookup, snippet
+fallbacks and source highlighting are the consumer's responsibility; the demo
+provides a generic SARIF adapter in `demo/src/sarif.ts`.
+
+### Projection and threads
+
+Hierarchy describes containment, not expansion preferences. The core projects
+it into visible rows, independently for each flow:
+
+- Default expansion opens paths to relevant actions and vital notes.
+- Closing an ancestor preserves relevant-action headers, vital notes and the
+  ancestor headers needed to show their paths.
+- Reopening a visible descendant can show its body without opening its closed
+  ancestors or exposing unrelated branches. Closing a parent retains its
+  descendants' expansion state.
+- Source steps associated with vital notes are included when their containing
+  path is open; vital notes themselves can remain visible when it is closed.
+
+Projected header rows contain the actual TFL in `location` and its original
+array position in `index`. Expansion keys passed to `buildThreadTraceRows`
+are `flowIndex:headerIndex`. The React component owns the expansion state.
+
+Flows are rendered sequentially, with independent nesting and colored thread
+gutters; the flow with `id: "global"` has no gutter. This ordering does not
+reconstruct cross-thread execution interleaving. Ordinary flat SARIF flows
+instead collapse consecutive unimportant steps into expandable ranges.
 
 ## Usage
 
@@ -45,43 +173,25 @@ Rendering is controlled by React; editor navigation is supplied by the caller.
 The optional `getStepDetails` callback provides file, line, column, and message
 labels when these cannot be read directly from a step.
 
-The core accepts structural `TraceFlow`/`TraceStep` data (SARIF thread flows
-are compatible). `parseTraceHeaders(locations)` reconstructs groups from TFLs
-whose `kinds` contain `"group"` and exactly one of `"function"`, `"action"`, or
-`"declarations"`. Kind order does not matter. Every TFL in a grouped trace must
-have a nonnegative integer `nestingLevel`: roots are level 0, children are one
-level deeper, and only headers can be parents. A function entry is its own
-header, typically with `kinds: ["group", "enter", "function"]`; it is rendered
-once, not as an additional source row.
+## Development and demo
 
-Reconstructed scopes have IDs equal to their header's zero-based TFL index
-**within its flow**, a `parentId`, and half-open `startIndex` / `endIndex` ranges
-including the header. Labels come from the header's `location.message.text`.
-Expansion keys passed to
-`buildThreadTraceRows` are `flowIndex:headerIndex`. Important or essential action
-headers mark relevant actions; missing importance still means `"important"`
-according to SARIF. Producers wanting an unimportant default must emit it
-explicitly.
+```sh
+npm install
+npm run build
+npm test
+npm run demo           # http://127.0.0.1:5173
+```
 
-Steps may specify `properties.noteLevel` (0/1 are vital) and
-`properties.sourceStepIndex` to link a note or assumption to its source. Call
-notes follow their header at the next depth and point backward to it; ordinary
-statement notes may precede their source and point forward. Separate notes do
-not change the source's importance. Vital notes and relevant action paths stay
-visible beneath closed ancestors, and a visible descendant can be reopened
-independently.
+The demo uses the same compact OHCI SARIF as the integration tests: three
+embedded C files, global declarations and two threads. Selecting a header or
+step displays its source with the corresponding line highlighted. See
+[`tests/fixtures/README.md`](tests/fixtures/README.md) for fixture provenance
+and regeneration commands.
 
-Old `flow.properties.scopes` metadata is ignored. Missing headers or malformed
-header hierarchies use flat importance-based grouping instead.
-
-The core no longer exports `parseTraceScopes`. The React adapter and demo use
-the header API. Projected scope rows expose `index` and `location` for the actual
-header TFL; scope row types and projection signatures otherwise remain available.
-Relevant notes use `noteLevel` when supplied, or standard note `kinds` and SARIF
-importance otherwise.
-
-The core runs projection independently for each flow. The React package owns
-presentation, expansion state, and thread gutters; neither package knows about
-VS Code, SARIF artifact resolution, or Klever's serialized JSON format.
+`npm run demo` starts Vite but does not rebuild library packages. After editing
+library code, run `npm run build`; restart with `npm run demo -- --force` if
+Vite still serves cached dependencies. `npm run demo:build` checks the demo's
+production bundle. On Node versions with experimental TypeScript stripping,
+run tests with `NODE_OPTIONS=--no-experimental-strip-types npm test`.
 
 Copyright (c) 2026 Vadim Mutilin. Licensed under MIT; see `LICENSE`.
